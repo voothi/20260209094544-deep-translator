@@ -1,0 +1,45 @@
+# ==============================================================================
+# Git Attributes - Global LF Normalization & Asset Protection
+# ==============================================================================
+
+# 1. Default Handling: Auto-detect text files and enforce Unix-style LF
+* text=auto eol=lf
+
+# 2. Plain Text & Markdown (Obsidian Vault Essentials)
+*.md text eol=lf
+*.txt text eol=lf
+*.csv text eol=lf
+
+# 3. Development & Scripting Languages
+*.py text eol=lf
+*.sh text eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# 4. Web, Configuration, and Styling
+*.css text eol=lf
+*.js text eol=lf
+*.jsx text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.xml text eol=lf
+*.html text eol=lf
+
+# 5. Binary Assets Protection (Explicitly prevent line-ending corruption)
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.mp3 binary
+*.mp4 binary
+*.mkv binary
+*.wav binary
+*.zip binary
+*.tar.gz binary
