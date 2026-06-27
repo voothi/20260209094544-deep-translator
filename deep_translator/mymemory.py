@@ -6,8 +6,6 @@ __copyright__ = "Copyright (C) 2020 Nidhal Baccouri"
 
 from typing import List, Optional, Union
 
-import requests
-
 from deep_translator.base import BaseTranslator
 from deep_translator.constants import BASE_URLS, MY_MEMORY_LANGUAGES_TO_CODES
 from deep_translator.exceptions import (
@@ -45,7 +43,7 @@ class MyMemoryTranslator(BaseTranslator):
             **kwargs,
         )
 
-    def _check_mymemory_body(self, response: requests.Response) -> None:
+    def _check_mymemory_body(self, response) -> None:
         from deep_translator.net import TransientResponseError
         if not response.text or not response.text.strip():
             raise TransientResponseError("Empty response body from MyMemory", response=response)
@@ -70,7 +68,6 @@ class MyMemoryTranslator(BaseTranslator):
 
         res_data = data.get("responseData")
         if not res_data or "translatedText" not in res_data:
-            # Check if there are matches at least, if neither, it is transient
             if not data.get("matches"):
                 raise TransientResponseError("Missing responseData/translatedText and no matches in MyMemory response", response=response)
 
@@ -84,6 +81,7 @@ class MyMemoryTranslator(BaseTranslator):
         @param return_all: set to True to return all synonym/similars of the translated text
         @return: str or list
         """
+        import urllib.error
         from deep_translator.net import TransientResponseError
         if is_input_valid(text, max_chars=500):
             text = text.strip()
@@ -104,12 +102,14 @@ class MyMemoryTranslator(BaseTranslator):
                 )
             except TransientResponseError:
                 raise TranslationNotFound(text)
-            except requests.exceptions.HTTPError as e:
-                if e.response is not None:
-                    if e.response.status_code == 429:
-                        raise TooManyRequests()
-                    elif request_failed(status_code=e.response.status_code):
-                        raise RequestError()
+            except urllib.error.HTTPError as e:
+                if e.code == 429:
+                    raise TooManyRequests()
+                raise RequestError()
+
+            if request_failed(status_code=response.status_code):
+                if response.status_code == 429:
+                    raise TooManyRequests()
                 raise RequestError()
 
             data = response.json()
@@ -123,7 +123,6 @@ class MyMemoryTranslator(BaseTranslator):
                 if not return_all:
                     return translation
                 else:
-                    # append translation at the start of the matches list
                     return [translation] + list(all_matches)
 
             elif not translation:

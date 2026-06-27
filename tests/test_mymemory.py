@@ -4,7 +4,6 @@
 
 import pytest
 from unittest.mock import patch, MagicMock, Mock
-import requests
 import json
 from deep_translator import MyMemoryTranslator, exceptions
 

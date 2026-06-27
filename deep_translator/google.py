@@ -6,7 +6,6 @@ __copyright__ = "Copyright (C) 2020 Nidhal Baccouri"
 
 from typing import List, Optional
 
-import requests
 from bs4 import BeautifulSoup
 
 from deep_translator.base import BaseTranslator
@@ -48,7 +47,7 @@ class GoogleTranslator(BaseTranslator):
 
         self._alt_element_query = {"class": "result-container"}
 
-    def _check_google_body(self, response: requests.Response) -> None:
+    def _check_google_body(self, response) -> None:
         from deep_translator.net import TransientResponseError
         if not response.text or not response.text.strip():
             raise TransientResponseError("Empty response body from Google Translate", response=response)
@@ -77,6 +76,7 @@ class GoogleTranslator(BaseTranslator):
         @return: str: translated text
         """
         import time
+        import urllib.error
         from deep_translator.net import TransientResponseError
         if is_input_valid(text, max_chars=5000):
             text = text.strip()
@@ -97,12 +97,14 @@ class GoogleTranslator(BaseTranslator):
                 )
             except TransientResponseError:
                 raise TranslationNotFound(text)
-            except requests.exceptions.HTTPError as e:
-                if e.response is not None:
-                    if e.response.status_code == 429:
-                        raise TooManyRequests()
-                    elif request_failed(status_code=e.response.status_code):
-                        raise RequestError()
+            except urllib.error.HTTPError as e:
+                if e.code == 429:
+                    raise TooManyRequests()
+                raise RequestError()
+
+            if request_failed(status_code=response.status_code):
+                if response.status_code == 429:
+                    raise TooManyRequests()
                 raise RequestError()
 
             soup = BeautifulSoup(response.text, "html.parser")
@@ -144,12 +146,14 @@ class GoogleTranslator(BaseTranslator):
                         )
                     except TransientResponseError:
                         raise TranslationNotFound(text)
-                    except requests.exceptions.HTTPError as e:
-                        if e.response is not None:
-                            if e.response.status_code == 429:
-                                raise TooManyRequests()
-                            elif request_failed(status_code=e.response.status_code):
-                                raise RequestError()
+                    except urllib.error.HTTPError as e:
+                        if e.code == 429:
+                            raise TooManyRequests()
+                        raise RequestError()
+
+                    if request_failed(status_code=response.status_code):
+                        if response.status_code == 429:
+                            raise TooManyRequests()
                         raise RequestError()
 
                     soup = BeautifulSoup(response.text, "html.parser")

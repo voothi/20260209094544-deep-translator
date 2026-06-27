@@ -1,7 +1,7 @@
 from unittest.mock import Mock, patch, MagicMock
 import pytest
-import requests
 import json
+import urllib.error
 from deep_translator.deepl import DeeplTranslator
 from deep_translator.exceptions import AuthorizationException, ServerException, TranslationNotFound
 
@@ -27,7 +27,7 @@ def test_wrong_api_key(mock_http_post):
     )
     resp = MagicMock()
     resp.status_code = 403
-    mock_http_post.side_effect = requests.exceptions.HTTPError("403", response=resp)
+    mock_http_post.return_value = resp
     with pytest.raises(AuthorizationException):
         translator.translate("Hello")
 
@@ -36,7 +36,7 @@ def test_deepl_connection_error_mapping(mock_http_post):
     translator = DeeplTranslator(
         api_key="key", source="en", target="es"
     )
-    mock_http_post.side_effect = requests.exceptions.ConnectionError("Connection failed")
+    mock_http_post.side_effect = ConnectionError("Connection failed")
     with pytest.raises(ServerException) as excinfo:
         translator.translate("Hello")
     assert "ERR_SERVICE_NOT_AVAIBLE" in str(excinfo.value)  # status 503 is mapped to ERR_SERVICE_NOT_AVAIBLE

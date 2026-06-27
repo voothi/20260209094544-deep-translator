@@ -1,25 +1,11 @@
 """Top-level package for Deep Translator"""
 
 __copyright__ = "Copyright (C) 2020 Nidhal Baccouri"
-
-from deep_translator.baidu import BaiduTranslator
-from deep_translator.chatgpt import ChatGptTranslator
-from deep_translator.deepl import DeeplTranslator
-from deep_translator.detection import batch_detection, single_detection
-from deep_translator.google import GoogleTranslator
-from deep_translator.libre import LibreTranslator
-from deep_translator.linguee import LingueeTranslator
-from deep_translator.microsoft import MicrosoftTranslator
-from deep_translator.mymemory import MyMemoryTranslator
-from deep_translator.papago import PapagoTranslator
-from deep_translator.pons import PonsTranslator
-from deep_translator.qcri import QcriTranslator
-from deep_translator.tencent import TencentTranslator
-from deep_translator.yandex import YandexTranslator
-
 __author__ = """Nidhal Baccouri"""
 __email__ = "nidhalbacc@gmail.com"
 __version__ = "1.9.1"
+
+import importlib
 
 __all__ = [
     "GoogleTranslator",
@@ -38,3 +24,33 @@ __all__ = [
     "single_detection",
     "batch_detection",
 ]
+
+_lazy_mapping = {
+    "GoogleTranslator": ".google",
+    "PonsTranslator": ".pons",
+    "LingueeTranslator": ".linguee",
+    "MyMemoryTranslator": ".mymemory",
+    "YandexTranslator": ".yandex",
+    "MicrosoftTranslator": ".microsoft",
+    "QcriTranslator": ".qcri",
+    "DeeplTranslator": ".deepl",
+    "LibreTranslator": ".libre",
+    "PapagoTranslator": ".papago",
+    "ChatGptTranslator": ".chatgpt",
+    "TencentTranslator": ".tencent",
+    "BaiduTranslator": ".baidu",
+    "single_detection": ".detection",
+    "batch_detection": ".detection",
+}
+
+def __getattr__(name: str):
+    if name in _lazy_mapping:
+        module_path = _lazy_mapping[name]
+        module = importlib.import_module(module_path, __package__)
+        val = getattr(module, name)
+        globals()[name] = val
+        return val
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
+def __dir__():
+    return __all__

@@ -55,7 +55,7 @@ dt = 'deep_translator.__main__:main'
 [tool.poetry.dependencies]
 python = "^3.7"
 beautifulsoup4 = "^4.9.1"
-requests = ">=2.27,<3"
+requests = ">=2.27,<3" # Note: google, mymemory, and deepl are stdlib-only and do not require requests
 docx2txt = {version = "^0.8", optional = true}
 pypdf = {version = "^3.3.0", optional = true}
 openai = {version = "^0.27.6", python = "^3.7.1", optional = true}

@@ -1,7 +1,6 @@
 import pytest
 import time
 import sys
-import requests
 from unittest.mock import MagicMock, patch
 from deep_translator import GoogleTranslator
 from deep_translator.net import ResilientSession
@@ -14,13 +13,14 @@ def test_google_no_request_path_lazy_session():
     assert res == "hello"
     assert translator._resilient_session is None
 
-@patch("requests.Session")
-def test_healthy_first_attempt_no_overhead(mock_session_cls):
-    mock_sess = MagicMock()
-    mock_session_cls.return_value = mock_sess
+@patch("urllib.request.build_opener")
+def test_healthy_first_attempt_no_overhead(mock_build_opener):
+    mock_opener = MagicMock()
+    mock_build_opener.return_value = mock_opener
     mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_sess.request.return_value = mock_resp
+    mock_resp.status = 200
+    mock_resp.read.return_value = b"OK"
+    mock_opener.open.return_value = mock_resp
 
     session = ResilientSession()
     on_retry_called = False
@@ -50,15 +50,15 @@ def test_google_check_body_perf():
     avg_time_ms = ((end - start) / 100) * 1000
     assert avg_time_ms < 5.0  # must be under 5ms on average
 
-@patch("requests.Session")
-def test_response_json_caching(mock_session_cls):
-    mock_sess = MagicMock()
-    mock_session_cls.return_value = mock_sess
-    
-    resp = requests.Response()
-    resp.status_code = 200
-    resp._content = b'{"hello": "world"}'
-    mock_sess.request.return_value = resp
+@patch("urllib.request.build_opener")
+def test_response_json_caching(mock_build_opener):
+    mock_opener = MagicMock()
+    mock_build_opener.return_value = mock_opener
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_resp.headers = None
+    mock_resp.read.return_value = b'{"hello": "world"}'
+    mock_opener.open.return_value = mock_resp
 
     session = ResilientSession()
     res = session.request("GET", "http://test.com")

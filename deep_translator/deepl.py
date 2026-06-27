@@ -3,8 +3,6 @@ __copyright__ = "Copyright (C) 2020 Nidhal Baccouri"
 import os
 from typing import List, Optional
 
-import requests
-
 from deep_translator.base import BaseTranslator
 from deep_translator.constants import (
     BASE_URLS,
@@ -45,6 +43,7 @@ class DeeplTranslator(BaseTranslator):
 
         self.version = "v2"
         self.api_key = api_key
+        self.proxies = kwargs.get("proxies", None)
         url = (
             BASE_URLS.get("DEEPL_FREE").format(version=self.version)
             if use_free_api
@@ -58,7 +57,7 @@ class DeeplTranslator(BaseTranslator):
             **kwargs
         )
 
-    def _check_deepl_body(self, response: requests.Response) -> None:
+    def _check_deepl_body(self, response) -> None:
         from deep_translator.net import TransientResponseError
         if not response.text or not response.text.strip():
             raise TransientResponseError("Empty response body from DeepL", response=response)
@@ -85,6 +84,8 @@ class DeeplTranslator(BaseTranslator):
         @param text: text to translate
         @return: translated text
         """
+        import urllib.error
+        import socket
         from deep_translator.net import TransientResponseError
         if is_input_valid(text):
             if self._same_source_target() or is_empty(text):
@@ -108,17 +109,20 @@ class DeeplTranslator(BaseTranslator):
                     headers=headers,
                     check_response=self._check_deepl_body,
                 )
-            except requests.exceptions.ConnectionError:
+            except (urllib.error.URLError, socket.timeout, ConnectionError, TimeoutError):
                 raise ServerException(503)
-            except requests.exceptions.HTTPError as e:
-                if e.response is not None:
-                    if e.response.status_code == 403:
-                        raise AuthorizationException(self.api_key)
-                    elif request_failed(status_code=e.response.status_code):
-                        raise ServerException(e.response.status_code)
+            except urllib.error.HTTPError as e:
+                if e.code == 429 or (500 <= e.code <= 504):
+                    raise ServerException(e.code)
                 raise ServerException(500)
             except TransientResponseError:
                 raise TranslationNotFound(text)
+
+            # Check returned non-transient error status codes
+            if response.status_code == 403:
+                raise AuthorizationException(self.api_key)
+            elif request_failed(status_code=response.status_code):
+                raise ServerException(response.status_code)
 
             # Get the response and check is not empty.
             res = response.json()

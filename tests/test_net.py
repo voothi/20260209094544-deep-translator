@@ -1,7 +1,12 @@
 import pytest
 import time
 import json
-import requests
+import socket
+import urllib.request
+import urllib.error
+import email
+import gzip
+import io
 from unittest.mock import MagicMock, patch, Mock
 from deep_translator.net import (
     ResilientSession,
@@ -12,65 +17,81 @@ from deep_translator.net import (
     parse_retry_after,
 )
 
+def make_mock_response(status, text, headers=None, url="http://test.com"):
+    mock_resp = MagicMock()
+    mock_resp.status = status
+    mock_resp.url = url
+    headers_bytes = b""
+    if headers:
+        headers_bytes = b"\r\n".join(f"{k}: {v}".encode("utf-8") for k, v in headers.items()) + b"\r\n"
+    headers_bytes += b"\r\n"
+    mock_resp.headers = email.message_from_bytes(headers_bytes)
+    mock_resp.read.return_value = text.encode("utf-8")
+    return mock_resp
+
+def make_http_error(status, text, headers=None, url="http://test.com"):
+    headers_bytes = b""
+    if headers:
+        headers_bytes = b"\r\n".join(f"{k}: {v}".encode("utf-8") for k, v in headers.items()) + b"\r\n"
+    headers_bytes += b"\r\n"
+    hdrs = email.message_from_bytes(headers_bytes)
+    fp = io.BytesIO(text.encode("utf-8"))
+    return urllib.error.HTTPError(url, status, "HTTP Error", hdrs, fp)
+
 def test_transient_classifiers():
-    # Statuses
     assert is_transient_status(429) is True
     assert is_transient_status(500) is True
     assert is_transient_status(503) is True
     assert is_transient_status(200) is False
     assert is_transient_status(400) is False
 
-    # Exceptions
-    assert is_transient_exception(requests.exceptions.Timeout("Timeout")) is True
-    assert is_transient_exception(requests.exceptions.ConnectionError("Conn")) is True
-    assert is_transient_exception(requests.exceptions.ProxyError("Proxy")) is True
-    assert is_transient_exception(requests.exceptions.ChunkedEncodingError("Chunk")) is True
+    assert is_transient_exception(urllib.error.HTTPError("http://x.com", 429, "Err", None, None)) is True
+    assert is_transient_exception(urllib.error.HTTPError("http://x.com", 500, "Err", None, None)) is True
+    assert is_transient_exception(urllib.error.HTTPError("http://x.com", 400, "Err", None, None)) is False
+    assert is_transient_exception(urllib.error.URLError("reason")) is True
+    assert is_transient_exception(socket.timeout("timeout")) is True
+    assert is_transient_exception(ConnectionError("conn")) is True
+    assert is_transient_exception(TimeoutError("timeout")) is True
     assert is_transient_exception(json.JSONDecodeError("msg", "doc", 0)) is True
     assert is_transient_exception(TransientResponseError("err")) is True
     assert is_transient_exception(ValueError("Fatal")) is False
 
-    # Dispatcher
     assert is_transient(429) is True
-    assert is_transient(requests.exceptions.Timeout("T")) is True
+    assert is_transient(socket.timeout("timeout")) is True
 
 def test_parse_retry_after():
     assert parse_retry_after("15") == 15.0
     assert parse_retry_after("invalid") == 0.0
-    # HTTP-date
     future_date = "Wed, 21 Oct 2099 07:28:00 GMT"
     val = parse_retry_after(future_date)
     assert val > 0.0
 
-@patch("requests.Session")
-def test_resilient_session_ua_and_proxies(mock_session_cls):
-    mock_sess = MagicMock()
-    mock_session_cls.return_value = mock_sess
-    mock_sess.headers = {}
+@patch("urllib.request.build_opener")
+def test_resilient_session_ua_and_proxies(mock_build_opener):
+    mock_opener = MagicMock()
+    mock_build_opener.return_value = mock_opener
 
     proxies = {"https": "http://127.0.0.1:8080"}
     with ResilientSession(proxies=proxies) as session:
-        # Check lazy creation
-        assert session._session is None
-        sess = session._get_session()
-        assert sess == mock_sess
-        assert mock_sess.proxies == proxies
-        # UA set
-        assert "User-Agent" in mock_sess.headers
-        assert "Chrome" in mock_sess.headers["User-Agent"]
+        assert session._opener is None
+        opener = session._get_opener()
+        assert opener == mock_opener
+        mock_build_opener.assert_called_once()
+        args, kwargs = mock_build_opener.call_args
+        # ProxyHandler should be in build_opener args
+        handlers = args
+        assert len(handlers) == 1
+        assert isinstance(handlers[0], urllib.request.ProxyHandler)
 
-@patch("requests.Session")
-def test_transient_then_success(mock_session_cls):
-    mock_sess = MagicMock()
-    mock_session_cls.return_value = mock_sess
+@patch("urllib.request.build_opener")
+def test_transient_then_success(mock_build_opener):
+    mock_opener = MagicMock()
+    mock_build_opener.return_value = mock_opener
 
-    # First attempt raises ConnectionError, second succeeds
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.text = "Success"
-
-    mock_sess.request.side_effect = [
-        requests.exceptions.ConnectionError("Transient connection issue"),
-        mock_response
+    mock_resp = make_mock_response(200, "Success")
+    mock_opener.open.side_effect = [
+        urllib.error.URLError("Connection refused"),
+        mock_resp
     ]
 
     retries_info = []
@@ -78,7 +99,6 @@ def test_transient_then_success(mock_session_cls):
         retries_info.append((attempt, reason))
 
     session = ResilientSession()
-    # Use small base/jitter so test runs instantly
     res = session.request(
         "GET", "http://test.com",
         max_retries=2, retry_backoff=0.01, retry_jitter=0.01,
@@ -87,33 +107,31 @@ def test_transient_then_success(mock_session_cls):
 
     assert res.text == "Success"
     assert len(retries_info) == 1
-    assert retries_info[0] == (1, "ConnectionError")
+    assert retries_info[0] == (1, "URLError")
 
-@patch("requests.Session")
-def test_budget_exhaustion(mock_session_cls):
-    mock_sess = MagicMock()
-    mock_session_cls.return_value = mock_sess
-    mock_sess.request.side_effect = requests.exceptions.Timeout("Timeout occurred")
+@patch("urllib.request.build_opener")
+def test_budget_exhaustion(mock_build_opener):
+    mock_opener = MagicMock()
+    mock_build_opener.return_value = mock_opener
+    mock_opener.open.side_effect = socket.timeout("Timed out")
 
     session = ResilientSession()
-    with pytest.raises(requests.exceptions.Timeout) as excinfo:
+    with pytest.raises(socket.timeout) as excinfo:
         session.request(
             "GET", "http://test.com",
             max_retries=2, retry_backoff=0.01, retry_jitter=0.01
         )
 
-    # Message must indicate attempt count and last error
     assert "Request failed after 3 attempts" in str(excinfo.value)
-    assert "Timeout occurred" in str(excinfo.value)
+    assert "Timed out" in str(excinfo.value)
 
-@patch("requests.Session")
-def test_non_transient_error(mock_session_cls):
-    mock_sess = MagicMock()
-    mock_session_cls.return_value = mock_sess
-    mock_sess.request.side_effect = ValueError("Fatal input error")
+@patch("urllib.request.build_opener")
+def test_non_transient_error(mock_build_opener):
+    mock_opener = MagicMock()
+    mock_build_opener.return_value = mock_opener
+    mock_opener.open.side_effect = ValueError("Fatal input error")
 
     session = ResilientSession()
-    # Should raise immediately without retry
     with pytest.raises(ValueError) as excinfo:
         session.request(
             "GET", "http://test.com",
@@ -121,28 +139,18 @@ def test_non_transient_error(mock_session_cls):
         )
 
     assert "Fatal input error" in str(excinfo.value)
-    # Check that request was called only once
-    assert mock_sess.request.call_count == 1
+    assert mock_opener.open.call_count == 1
 
-@patch("requests.Session")
-def test_endless_mode(mock_session_cls):
-    mock_sess = MagicMock()
-    mock_session_cls.return_value = mock_sess
+@patch("urllib.request.build_opener")
+def test_endless_mode(mock_build_opener):
+    mock_opener = MagicMock()
+    mock_build_opener.return_value = mock_opener
 
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.text = "Endless success"
+    mock_resp = make_mock_response(200, "Endless success")
+    fail_err = make_http_error(503, "Service Unavailable")
 
-    # Fail 5 times with HTTP 503, then succeed
-    fail_resp = MagicMock()
-    fail_resp.status_code = 503
-
-    mock_sess.request.side_effect = [
-        requests.exceptions.HTTPError("Service Unavailable", response=fail_resp),
-        requests.exceptions.HTTPError("Service Unavailable", response=fail_resp),
-        requests.exceptions.HTTPError("Service Unavailable", response=fail_resp),
-        requests.exceptions.HTTPError("Service Unavailable", response=fail_resp),
-        requests.exceptions.HTTPError("Service Unavailable", response=fail_resp),
+    mock_opener.open.side_effect = [
+        fail_err, fail_err, fail_err, fail_err, fail_err,
         mock_resp
     ]
 
@@ -152,38 +160,30 @@ def test_endless_mode(mock_session_cls):
         max_retries=-1, retry_backoff=0.001, retry_jitter=0.001
     )
     assert res.text == "Endless success"
-    assert mock_sess.request.call_count == 6
+    assert mock_opener.open.call_count == 6
 
-@patch("requests.Session")
-def test_max_total_time_deadline(mock_session_cls):
-    mock_sess = MagicMock()
-    mock_session_cls.return_value = mock_sess
-    mock_sess.request.side_effect = requests.exceptions.Timeout("Timeout")
+@patch("urllib.request.build_opener")
+def test_max_total_time_deadline(mock_build_opener):
+    mock_opener = MagicMock()
+    mock_build_opener.return_value = mock_opener
+    mock_opener.open.side_effect = socket.timeout("Timed out")
 
     session = ResilientSession()
-    # 0.1s max deadline, delay would be larger, so it halts
-    with pytest.raises(requests.exceptions.Timeout):
+    with pytest.raises(socket.timeout):
         session.request(
             "GET", "http://test.com",
             max_retries=5, retry_backoff=0.5, retry_jitter=0.1,
             max_total_time=0.05
         )
 
-@patch("requests.Session")
-def test_check_response_callback(mock_session_cls):
-    mock_sess = MagicMock()
-    mock_session_cls.return_value = mock_sess
+@patch("urllib.request.build_opener")
+def test_check_response_callback(mock_build_opener):
+    mock_opener = MagicMock()
+    mock_build_opener.return_value = mock_opener
 
-    # Mock response returns empty body
-    mock_resp_empty = MagicMock()
-    mock_resp_empty.status_code = 200
-    mock_resp_empty.text = ""
-
-    mock_resp_ok = MagicMock()
-    mock_resp_ok.status_code = 200
-    mock_resp_ok.text = "Hello World"
-
-    mock_sess.request.side_effect = [mock_resp_empty, mock_resp_ok]
+    mock_resp_empty = make_mock_response(200, "")
+    mock_resp_ok = make_mock_response(200, "Hello World")
+    mock_opener.open.side_effect = [mock_resp_empty, mock_resp_ok]
 
     def check_response(resp):
         if not resp.text:
@@ -196,21 +196,16 @@ def test_check_response_callback(mock_session_cls):
         check_response=check_response
     )
     assert res.text == "Hello World"
-    assert mock_sess.request.call_count == 2
+    assert mock_opener.open.call_count == 2
 
-@patch("requests.Session")
-def test_check_response_not_called_on_transient_status(mock_session_cls):
-    mock_sess = MagicMock()
-    mock_session_cls.return_value = mock_sess
+@patch("urllib.request.build_opener")
+def test_check_response_not_called_on_transient_status(mock_build_opener):
+    mock_opener = MagicMock()
+    mock_build_opener.return_value = mock_opener
 
-    fail_resp = MagicMock()
-    fail_resp.status_code = 429
-
-    mock_resp_ok = MagicMock()
-    mock_resp_ok.status_code = 200
-    mock_resp_ok.text = "OK"
-
-    mock_sess.request.side_effect = [fail_resp, mock_resp_ok]
+    fail_err = make_http_error(429, "Too Many Requests")
+    mock_resp_ok = make_mock_response(200, "OK")
+    mock_opener.open.side_effect = [fail_err, mock_resp_ok]
 
     check_called = False
     def check_response(resp):
@@ -223,43 +218,37 @@ def test_check_response_not_called_on_transient_status(mock_session_cls):
         max_retries=2, retry_backoff=0.01, retry_jitter=0.01,
         check_response=check_response
     )
-    # check_response should not be called on the 429 response, only on 200
     assert check_called is True
-    # If check_response was called on 429, we would know, but here we can check call arguments
-    # Let's verify check_response wasn't called with fail_resp
-    # Since check_called is True, it must have been called for mock_resp_ok.
-    mock_sess.request.side_effect = [fail_resp]
+
+    # Try again with max_retries=0 on transient status code, check_response should not fire
+    mock_opener.open.side_effect = [fail_err]
     check_called = False
-    with pytest.raises(requests.exceptions.HTTPError):
+    with pytest.raises(urllib.error.HTTPError):
         session.request(
             "GET", "http://test.com",
             max_retries=0, check_response=check_response
         )
     assert check_called is False
 
-@patch("requests.Session")
-def test_request_once_limit(mock_session_cls):
-    mock_sess = MagicMock()
-    mock_session_cls.return_value = mock_sess
-    mock_sess.request.side_effect = requests.exceptions.Timeout("Timeout")
+@patch("urllib.request.build_opener")
+def test_request_once_limit(mock_build_opener):
+    mock_opener = MagicMock()
+    mock_build_opener.return_value = mock_opener
+    mock_opener.open.side_effect = socket.timeout("Timed out")
 
     session = ResilientSession()
-    # request_once defaults to max_retries=1 (2 total attempts)
-    with pytest.raises(requests.exceptions.Timeout) as excinfo:
+    with pytest.raises(socket.timeout) as excinfo:
         session.request_once("GET", "http://test.com", retry_backoff=0.01, retry_jitter=0.01)
     
     assert "2 attempts" in str(excinfo.value)
 
-@patch("requests.Session")
-def test_interruptible_sleep(mock_session_cls):
-    mock_sess = MagicMock()
-    mock_session_cls.return_value = mock_sess
-    mock_sess.request.side_effect = requests.exceptions.Timeout("Timeout")
+@patch("urllib.request.build_opener")
+def test_interruptible_sleep(mock_build_opener):
+    mock_opener = MagicMock()
+    mock_build_opener.return_value = mock_opener
+    mock_opener.open.side_effect = socket.timeout("Timed out")
 
     session = ResilientSession()
-    
-    # We mock time.sleep to raise KeyboardInterrupt on the second call (inside sleep loop)
-    # wait, we can mock time.sleep
     sleep_calls = 0
     def mock_sleep(sec):
         nonlocal sleep_calls
@@ -273,3 +262,71 @@ def test_interruptible_sleep(mock_session_cls):
                 "GET", "http://test.com",
                 max_retries=2, retry_backoff=1.0, retry_jitter=0.1
             )
+
+@patch("urllib.request.build_opener")
+def test_dict_payload_serialization(mock_build_opener):
+    mock_opener = MagicMock()
+    mock_build_opener.return_value = mock_opener
+    mock_resp = make_mock_response(200, "OK")
+    mock_opener.open.return_value = mock_resp
+
+    session = ResilientSession()
+    data = {"text": "hello", "target": "es"}
+    session.request("POST", "http://test.com", data=data)
+
+    mock_opener.open.assert_called_once()
+    req = mock_opener.open.call_args[0][0]
+    assert req.method == "POST"
+    assert req.data == b"text=hello&target=es"
+    assert req.headers["Content-type"] == "application/x-www-form-urlencoded"
+
+@patch("urllib.request.build_opener")
+def test_defensive_gzip(mock_build_opener):
+    mock_opener = MagicMock()
+    mock_build_opener.return_value = mock_opener
+
+    plain_text = "decompressed text"
+    compressed = gzip.compress(plain_text.encode("utf-8"))
+    mock_resp = make_mock_response(200, "", headers={"Content-Encoding": "gzip"})
+    mock_resp.read.return_value = compressed
+    mock_opener.open.return_value = mock_resp
+
+    session = ResilientSession()
+    res = session.request("GET", "http://test.com")
+    assert res.text == plain_text
+
+@patch("urllib.request.build_opener")
+def test_case_insensitive_headers(mock_build_opener):
+    mock_opener = MagicMock()
+    mock_build_opener.return_value = mock_opener
+    mock_resp = make_mock_response(200, "OK", headers={"Retry-After": "45"})
+    mock_opener.open.return_value = mock_resp
+
+    session = ResilientSession()
+    res = session.request("GET", "http://test.com")
+    assert res.headers.get("retry-after") == "45"
+    assert res.headers.get("Retry-After") == "45"
+
+@patch("urllib.request.build_opener")
+def test_d3a_d3b_split(mock_build_opener):
+    mock_opener = MagicMock()
+    mock_build_opener.return_value = mock_opener
+
+    # Transient 429 error raised during request
+    err_429 = make_http_error(429, "Too many requests")
+    mock_opener.open.side_effect = err_429
+
+    session = ResilientSession()
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        session.request("GET", "http://test.com", max_retries=0)
+    assert excinfo.value.code == 429
+
+    # Non-transient 403 error: ResponseShim should be returned, not raised
+    err_403 = make_http_error(403, "Forbidden")
+    mock_opener.open.side_effect = None
+    mock_opener.open.return_value = err_403
+    # Wait, in urllib, opener.open actually raises HTTPError.
+    # But in ResilientSession.request, it catches HTTPError, wraps in ResponseShim, and returns it.
+    mock_opener.open.side_effect = err_403
+    res = session.request("GET", "http://test.com", max_retries=0)
+    assert res.status_code == 403
