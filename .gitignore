@@ -106,3 +106,7 @@ ENV/
 # IDE settings
 .vscode/
 .history
+.kilocode/
+openspec/
+.agent/
+AGENTS.md
