@@ -211,8 +211,6 @@ class ResilientSession:
                         del headers_to_send[existing_key]
                 headers_to_send[k] = v
 
-        req = urllib.request.Request(url, data=data, headers=headers_to_send, method=method)
-
         start_time = time.time()
         attempt = 0
         last_error = None
@@ -229,6 +227,9 @@ class ResilientSession:
             attempt += 1
             response = None
             current_error = None
+
+            # Re-build Request object per attempt to avoid stale internal state
+            req = urllib.request.Request(url, data=data, headers=headers_to_send, method=method)
 
             try:
                 opener = self._get_opener()
