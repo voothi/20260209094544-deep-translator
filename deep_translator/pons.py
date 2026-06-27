@@ -75,20 +75,40 @@ class PonsTranslator(BaseTranslator):
                 raise RequestError()
 
             soup = BeautifulSoup(response.text, "html.parser")
-            elements = soup.find("div", {"class": "result_list"}).findAll(
-                self._element_tag, self._element_query
-            )
-            response.close()
+            result_list = soup.find("div", {"class": "result_list"})
+            
+            if result_list:
+                elements = result_list.findAll(
+                    self._element_tag, self._element_query
+                )
+                response.close()
 
-            if not elements:
-                raise ElementNotFoundInGetRequest(word)
+                if not elements:
+                    raise ElementNotFoundInGetRequest(word)
 
-            filtered_elements = []
-            for el in elements:
-                temp = []
-                for e in el.findAll("a"):
-                    temp.append(e.get_text())
-                filtered_elements.append(" ".join(temp))
+                filtered_elements = []
+                for el in elements:
+                    temp = []
+                    for e in el.findAll("a"):
+                        temp.append(e.get_text())
+                    filtered_elements.append(" ".join(temp))
+            else:
+                elements = soup.find_all(attrs={"data-e2e": "translation-target"})
+                response.close()
+
+                if not elements:
+                    raise ElementNotFoundInGetRequest(word)
+
+                filtered_elements = []
+                for el in elements:
+                    el_clone = BeautifulSoup(str(el), "html.parser").find(attrs={"data-e2e": "translation-target"})
+                    if el_clone:
+                        for tag in el_clone.find_all(["span", "acronym"]):
+                            tag.decompose()
+                        text = el_clone.get_text().strip()
+                        text = " ".join(text.split())
+                        if text:
+                            filtered_elements.append(text)
 
             if not filtered_elements:
                 raise ElementNotFoundInGetRequest(word)
