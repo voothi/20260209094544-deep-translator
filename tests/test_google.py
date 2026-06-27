@@ -4,6 +4,8 @@
 
 import pytest
 
+from unittest.mock import patch, MagicMock, Mock
+import requests
 from deep_translator import GoogleTranslator, exceptions
 from deep_translator.constants import GOOGLE_LANGUAGES_TO_CODES
 
@@ -60,3 +62,86 @@ def test_one_character_words():
     assert (
         GoogleTranslator(source="es", target="en").translate("o") is not None
     )
+
+@patch("deep_translator.google.GoogleTranslator._http_get")
+def test_google_resilience_routing(mock_http_get):
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.text = '<div class="t0">hello</div>'
+    mock_http_get.return_value = mock_resp
+
+    translator = GoogleTranslator(source="en", target="es")
+    res = translator.translate("good")
+    assert res == "hello"
+    mock_http_get.assert_called_once()
+    kwargs = mock_http_get.call_args[1]
+    assert kwargs["check_response"] == translator._check_google_body
+
+@patch("deep_translator.google.GoogleTranslator._http_get")
+@patch("deep_translator.google.GoogleTranslator._http_get_once")
+def test_google_fallback_uses_http_get_once(mock_http_get_once, mock_http_get):
+    mock_resp1 = MagicMock()
+    mock_resp1.status_code = 200
+    mock_resp1.text = '<div class="t0">hello</div>'
+    mock_http_get.return_value = mock_resp1
+
+    mock_resp2 = MagicMock()
+    mock_resp2.status_code = 200
+    mock_resp2.text = '<div class="t0">hola</div>'
+    mock_http_get_once.return_value = mock_resp2
+
+    translator = GoogleTranslator(source="en", target="es")
+    translator._url_params["hl"] = "en"
+    
+    # We must patch time.time to avoid issues with elapsed time
+    with patch("time.time", return_value=1000.0):
+        res = translator.translate("hello")
+        assert res == "hola"
+        mock_http_get.assert_called_once()
+        mock_http_get_once.assert_called_once()
+        assert "hl" not in translator._url_params
+
+@patch("deep_translator.google.GoogleTranslator._http_get")
+def test_google_exhaustion_maps_to_translation_not_found(mock_http_get):
+    from deep_translator.net import TransientResponseError
+    mock_http_get.side_effect = TransientResponseError("Exhausted", response=MagicMock())
+
+    translator = GoogleTranslator(source="en", target="es")
+    with pytest.raises(exceptions.TranslationNotFound):
+        translator.translate("hello")
+
+@patch("deep_translator.google.GoogleTranslator._http_get")
+def test_google_http_error_mappings(mock_http_get):
+    resp_429 = MagicMock()
+    resp_429.status_code = 429
+    mock_http_get.side_effect = requests.exceptions.HTTPError("429", response=resp_429)
+
+    translator = GoogleTranslator(source="en", target="es")
+    with pytest.raises(exceptions.TooManyRequests):
+        translator.translate("hello")
+
+    resp_503 = MagicMock()
+    resp_503.status_code = 503
+    mock_http_get.side_effect = requests.exceptions.HTTPError("503", response=resp_503)
+    with pytest.raises(exceptions.RequestError):
+        translator.translate("hello")
+
+def test_google_backward_compatible_construction():
+    t1 = GoogleTranslator(source="en", target="es")
+    assert t1._timeout == 10
+    
+    t2 = GoogleTranslator(source="en", target="es", timeout=5, max_retries=2)
+    assert t2._timeout == 5
+    assert t2._max_retries == 2
+
+def test_google_ahk_tokenization_round_trip():
+    translator = GoogleTranslator(source="en", target="es")
+    resp = MagicMock()
+    resp.text = '<div class="t0">hello [[S]] backslash [[B]] newline [[N]]</div>'
+    translator._check_google_body(resp)
+
+    resp_trunc = MagicMock()
+    resp_trunc.text = '<div class="t0">hello [[S]] backslash [[B]] newline [[N</div>'
+    from deep_translator.net import TransientResponseError
+    with pytest.raises(TransientResponseError):
+        translator._check_google_body(resp_trunc)

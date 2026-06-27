@@ -58,11 +58,34 @@ class DeeplTranslator(BaseTranslator):
             **kwargs
         )
 
+    def _check_deepl_body(self, response: requests.Response) -> None:
+        from deep_translator.net import TransientResponseError
+        if not response.text or not response.text.strip():
+            raise TransientResponseError("Empty response body from DeepL", response=response)
+        
+        # Check for truncated AHK token
+        text_to_check = response.text.strip()
+        last_open = text_to_check.rfind('[[')
+        if last_open != -1:
+            last_close = text_to_check.rfind(']]')
+            if last_close < last_open:
+                raise TransientResponseError("Truncated AHK token in response text", response=response)
+        if text_to_check.endswith('['):
+            raise TransientResponseError("Truncated AHK token in response text", response=response)
+
+        try:
+            res = response.json()
+        except Exception as e:
+            raise TransientResponseError(f"Failed to decode JSON from DeepL: {str(e)}", response=response)
+        if not res or "translations" not in res or not res["translations"] or "text" not in res["translations"][0]:
+            raise TransientResponseError("Missing translations or text in DeepL response JSON", response=response)
+
     def translate(self, text: str, **kwargs) -> str:
         """
         @param text: text to translate
         @return: translated text
         """
+        from deep_translator.net import TransientResponseError
         if is_input_valid(text):
             if self._same_source_target() or is_empty(text):
                 return text
@@ -79,16 +102,24 @@ class DeeplTranslator(BaseTranslator):
             }
             # Do the request and check the connection.
             try:
-                response = requests.post(
-                    self._base_url + translate_endpoint, data=data, headers=headers
+                response = self._http_post(
+                    self._base_url + translate_endpoint,
+                    data=data,
+                    headers=headers,
+                    check_response=self._check_deepl_body,
                 )
-            except ConnectionError:
+            except requests.exceptions.ConnectionError:
                 raise ServerException(503)
-            # If the answer is not success, raise server exception.
-            if response.status_code == 403:
-                raise AuthorizationException(self.api_key)
-            if request_failed(status_code=response.status_code):
-                raise ServerException(response.status_code)
+            except requests.exceptions.HTTPError as e:
+                if e.response is not None:
+                    if e.response.status_code == 403:
+                        raise AuthorizationException(self.api_key)
+                    elif request_failed(status_code=e.response.status_code):
+                        raise ServerException(e.response.status_code)
+                raise ServerException(500)
+            except TransientResponseError:
+                raise TranslationNotFound(text)
+
             # Get the response and check is not empty.
             res = response.json()
             if not res:

@@ -48,12 +48,36 @@ class GoogleTranslator(BaseTranslator):
 
         self._alt_element_query = {"class": "result-container"}
 
+    def _check_google_body(self, response: requests.Response) -> None:
+        from deep_translator.net import TransientResponseError
+        if not response.text or not response.text.strip():
+            raise TransientResponseError("Empty response body from Google Translate", response=response)
+        
+        # Check for truncated AHK token
+        text_to_check = response.text.strip()
+        last_open = text_to_check.rfind('[[')
+        if last_open != -1:
+            last_close = text_to_check.rfind(']]')
+            if last_close < last_open:
+                raise TransientResponseError("Truncated AHK token in response text", response=response)
+        if text_to_check.endswith('['):
+            raise TransientResponseError("Truncated AHK token in response text", response=response)
+
+        soup = BeautifulSoup(response.text, "html.parser")
+        element = soup.find(self._element_tag, self._element_query)
+        if not element:
+            element = soup.find(self._element_tag, self._alt_element_query)
+            if not element:
+                raise TransientResponseError("No translation element found in Google Translate response", response=response)
+
     def translate(self, text: str, **kwargs) -> str:
         """
         function to translate a text
         @param text: desired text to translate
         @return: str: translated text
         """
+        import time
+        from deep_translator.net import TransientResponseError
         if is_input_valid(text, max_chars=5000):
             text = text.strip()
             if self._same_source_target() or is_empty(text):
@@ -64,24 +88,31 @@ class GoogleTranslator(BaseTranslator):
             if self.payload_key:
                 self._url_params[self.payload_key] = text
 
-            response = requests.get(
-                self._base_url, params=self._url_params, proxies=self.proxies
-            )
-            if response.status_code == 429:
-                raise TooManyRequests()
-
-            if request_failed(status_code=response.status_code):
+            start_time = time.time()
+            try:
+                response = self._http_get(
+                    self._base_url,
+                    params=self._url_params,
+                    check_response=self._check_google_body,
+                )
+            except TransientResponseError:
+                raise TranslationNotFound(text)
+            except requests.exceptions.HTTPError as e:
+                if e.response is not None:
+                    if e.response.status_code == 429:
+                        raise TooManyRequests()
+                    elif request_failed(status_code=e.response.status_code):
+                        raise RequestError()
                 raise RequestError()
 
             soup = BeautifulSoup(response.text, "html.parser")
-
             element = soup.find(self._element_tag, self._element_query)
-            response.close()
 
             if not element:
                 element = soup.find(self._element_tag, self._alt_element_query)
                 if not element:
                     raise TranslationNotFound(text)
+
             if element.get_text(strip=True) == text.strip():
                 to_translate_alpha = "".join(
                     ch for ch in text.strip() if ch.isalnum()
@@ -98,8 +129,36 @@ class GoogleTranslator(BaseTranslator):
                     if "hl" not in self._url_params:
                         return text.strip()
                     del self._url_params["hl"]
-                    return self.translate(text)
 
+                    remaining = None
+                    if self._max_total_time is not None:
+                        elapsed = time.time() - start_time
+                        remaining = max(0.0, self._max_total_time - elapsed)
+
+                    try:
+                        response = self._http_get_once(
+                            self._base_url,
+                            params=self._url_params,
+                            check_response=self._check_google_body,
+                            max_total_time=remaining,
+                        )
+                    except TransientResponseError:
+                        raise TranslationNotFound(text)
+                    except requests.exceptions.HTTPError as e:
+                        if e.response is not None:
+                            if e.response.status_code == 429:
+                                raise TooManyRequests()
+                            elif request_failed(status_code=e.response.status_code):
+                                raise RequestError()
+                        raise RequestError()
+
+                    soup = BeautifulSoup(response.text, "html.parser")
+                    element = soup.find(self._element_tag, self._element_query)
+                    if not element:
+                        element = soup.find(self._element_tag, self._alt_element_query)
+                        if not element:
+                            raise TranslationNotFound(text)
+                    return element.get_text(strip=True)
             else:
                 return element.get_text(strip=True)
 

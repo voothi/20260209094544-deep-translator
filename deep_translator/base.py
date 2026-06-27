@@ -4,12 +4,19 @@ __copyright__ = "Copyright (C) 2020 Nidhal Baccouri"
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Callable, List, Optional, Union
 
 from deep_translator.constants import GOOGLE_LANGUAGES_TO_CODES
 from deep_translator.exceptions import (
     InvalidSourceOrTargetLanguage,
     LanguageNotSupportedException,
+)
+from deep_translator.net import (
+    DEFAULT_TIMEOUT,
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_BACKOFF_BASE,
+    DEFAULT_BACKOFF_JITTER,
+    DEFAULT_MAX_DELAY,
 )
 
 
@@ -27,6 +34,14 @@ class BaseTranslator(ABC):
         payload_key: Optional[str] = None,
         element_tag: Optional[str] = None,
         element_query: Optional[dict] = None,
+        *,
+        timeout: float = DEFAULT_TIMEOUT,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        retry_backoff: float = DEFAULT_BACKOFF_BASE,
+        retry_jitter: float = DEFAULT_BACKOFF_JITTER,
+        max_delay: float = DEFAULT_MAX_DELAY,
+        max_total_time: Optional[float] = None,
+        on_retry: Optional[Callable] = None,
         **url_params,
     ):
         """
@@ -46,7 +61,75 @@ class BaseTranslator(ABC):
         self._element_tag = element_tag
         self._element_query = element_query
         self.payload_key = payload_key
+
+        self._timeout = timeout
+        self._max_retries = max_retries
+        self._retry_backoff = retry_backoff
+        self._retry_jitter = retry_jitter
+        self._max_delay = max_delay
+        self._max_total_time = max_total_time
+        self._on_retry = on_retry
+        self._resilient_session = None
         super().__init__()
+
+    def _get_resilient_session(self):
+        if self._resilient_session is None:
+            from deep_translator.net import ResilientSession
+            proxies = getattr(self, "proxies", None)
+            self._resilient_session = ResilientSession(proxies=proxies)
+        return self._resilient_session
+
+    def _http_get(self, url: str, **kwargs):
+        session = self._get_resilient_session()
+        params = {
+            "timeout": self._timeout,
+            "max_retries": self._max_retries,
+            "retry_backoff": self._retry_backoff,
+            "retry_jitter": self._retry_jitter,
+            "max_delay": self._max_delay,
+            "max_total_time": self._max_total_time,
+            "on_retry": self._on_retry,
+        }
+        params.update(kwargs)
+        return session.get(url, **params)
+
+    def _http_post(self, url: str, **kwargs):
+        session = self._get_resilient_session()
+        params = {
+            "timeout": self._timeout,
+            "max_retries": self._max_retries,
+            "retry_backoff": self._retry_backoff,
+            "retry_jitter": self._retry_jitter,
+            "max_delay": self._max_delay,
+            "max_total_time": self._max_total_time,
+            "on_retry": self._on_retry,
+        }
+        params.update(kwargs)
+        return session.post(url, **params)
+
+    def _http_get_once(self, url: str, **kwargs):
+        session = self._get_resilient_session()
+        params = {
+            "timeout": self._timeout,
+            "max_retries": 1,
+            "retry_backoff": self._retry_backoff,
+            "retry_jitter": self._retry_jitter,
+            "max_delay": self._max_delay,
+            "on_retry": self._on_retry,
+        }
+        params.update(kwargs)
+        return session.request_once("GET", url, **params)
+
+    def close(self):
+        if self._resilient_session is not None:
+            self._resilient_session.close()
+            self._resilient_session = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
 
     @property
     def source(self):

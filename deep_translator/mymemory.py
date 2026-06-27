@@ -42,7 +42,37 @@ class MyMemoryTranslator(BaseTranslator):
             target=target,
             payload_key="q",
             languages=MY_MEMORY_LANGUAGES_TO_CODES,
+            **kwargs,
         )
+
+    def _check_mymemory_body(self, response: requests.Response) -> None:
+        from deep_translator.net import TransientResponseError
+        if not response.text or not response.text.strip():
+            raise TransientResponseError("Empty response body from MyMemory", response=response)
+        
+        # Check for truncated AHK token
+        text_to_check = response.text.strip()
+        last_open = text_to_check.rfind('[[')
+        if last_open != -1:
+            last_close = text_to_check.rfind(']]')
+            if last_close < last_open:
+                raise TransientResponseError("Truncated AHK token in response text", response=response)
+        if text_to_check.endswith('['):
+            raise TransientResponseError("Truncated AHK token in response text", response=response)
+
+        try:
+            data = response.json()
+        except Exception as e:
+            raise TransientResponseError(f"Failed to decode JSON from MyMemory: {str(e)}", response=response)
+
+        if not data:
+            raise TransientResponseError("No JSON data from MyMemory", response=response)
+
+        res_data = data.get("responseData")
+        if not res_data or "translatedText" not in res_data:
+            # Check if there are matches at least, if neither, it is transient
+            if not data.get("matches"):
+                raise TransientResponseError("Missing responseData/translatedText and no matches in MyMemory response", response=response)
 
     def translate(
         self, text: str, return_all: bool = False, **kwargs
@@ -54,6 +84,7 @@ class MyMemoryTranslator(BaseTranslator):
         @param return_all: set to True to return all synonym/similars of the translated text
         @return: str or list
         """
+        from deep_translator.net import TransientResponseError
         if is_input_valid(text, max_chars=500):
             text = text.strip()
             if self._same_source_target() or is_empty(text):
@@ -65,20 +96,26 @@ class MyMemoryTranslator(BaseTranslator):
             if self.email:
                 self._url_params["de"] = self.email
 
-            response = requests.get(
-                self._base_url, params=self._url_params, proxies=self.proxies
-            )
-
-            if response.status_code == 429:
-                raise TooManyRequests()
-            if request_failed(status_code=response.status_code):
+            try:
+                response = self._http_get(
+                    self._base_url,
+                    params=self._url_params,
+                    check_response=self._check_mymemory_body,
+                )
+            except TransientResponseError:
+                raise TranslationNotFound(text)
+            except requests.exceptions.HTTPError as e:
+                if e.response is not None:
+                    if e.response.status_code == 429:
+                        raise TooManyRequests()
+                    elif request_failed(status_code=e.response.status_code):
+                        raise RequestError()
                 raise RequestError()
 
             data = response.json()
             if not data:
-                TranslationNotFound(text)
+                raise TranslationNotFound(text)
 
-            response.close()
             translation = data.get("responseData").get("translatedText")
             all_matches = data.get("matches", [])
 
@@ -91,8 +128,11 @@ class MyMemoryTranslator(BaseTranslator):
 
             elif not translation:
                 matches = (match["translation"] for match in all_matches)
-                next_match = next(matches)
-                return next_match if not return_all else list(all_matches)
+                try:
+                    next_match = next(matches)
+                    return next_match if not return_all else list(all_matches)
+                except StopIteration:
+                    raise TranslationNotFound(text)
 
     def translate_file(self, path: str, **kwargs) -> str:
         """
