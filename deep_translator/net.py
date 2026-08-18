@@ -1,6 +1,7 @@
 import time
 import random
-from typing import Callable, Optional, Union
+import sys
+from typing import Any, Callable, Optional, Union
 from deep_translator._httpresponse import ResponseShim
 
 # Default constants
@@ -33,14 +34,23 @@ def is_transient_exception(exc: BaseException) -> bool:
     if isinstance(exc, urllib.error.HTTPError):
         return is_transient_status(exc.code)
         
-    if isinstance(exc, (
+    transient_types = (
         urllib.error.URLError,
         socket.timeout,
         ConnectionError,
         TimeoutError,
         json.JSONDecodeError,
         TransientResponseError
-    )):
+    )
+    req = sys.modules.get("requests")
+    if req is not None:
+        transient_types = transient_types + (
+            req.exceptions.ConnectionError,
+            req.exceptions.Timeout,
+            req.exceptions.ChunkedEncodingError,
+        )
+
+    if isinstance(exc, transient_types):
         return True
     return False
 
@@ -128,9 +138,10 @@ def raise_exhausted_error(last_error: BaseException, attempt: int):
     raise new_exc
 
 class ResilientSession:
-    """urllib.request-backed session wrapper with built-in retry and timeout resilience."""
-    def __init__(self, proxies: Optional[dict] = None):
+    """Session wrapper with built-in retry and timeout resilience, supporting urllib or persistent requests.Session."""
+    def __init__(self, proxies: Optional[dict] = None, session: Optional[Any] = None):
         self.proxies = proxies
+        self.session = session
         self._opener = None
         self._ua_set = False
         self._headers = {}
@@ -228,31 +239,55 @@ class ResilientSession:
             response = None
             current_error = None
 
-            # Re-build Request object per attempt to avoid stale internal state
-            req = urllib.request.Request(url, data=data, headers=headers_to_send, method=method)
-
-            try:
-                opener = self._get_opener()
-                raw_response = opener.open(req, timeout=timeout)
-                response = ResponseShim(raw_response)
-            except urllib.error.HTTPError as e:
-                response = ResponseShim(e)
-                if is_transient_status(e.code):
-                    e.response = response
+            if self.session is not None:
+                try:
+                    resp = self.session.request(
+                        method=method,
+                        url=url,
+                        data=data,
+                        headers=headers_to_send,
+                        timeout=timeout
+                    )
+                    response = resp
+                    if is_transient_status(resp.status_code):
+                        import urllib.error
+                        http_err = urllib.error.HTTPError(url, resp.status_code, f"HTTP {resp.status_code}", resp.headers, None)
+                        http_err.response = resp
+                        current_error = http_err
+                    else:
+                        if check_response is not None:
+                            try:
+                                check_response(resp)
+                            except Exception as val_err:
+                                current_error = val_err
+                except Exception as e:
                     current_error = e
-                else:
-                    # Non-transient HTTPError (e.g. 400, 403, 404).
-                    # Run check_response callback on ResponseShim
-                    if check_response is not None:
-                        try:
-                            check_response(response)
-                        except Exception as val_err:
-                            current_error = val_err
-                    # If verification passes, return the response shim
-                    if current_error is None:
-                        return response
-            except Exception as e:
-                current_error = e
+            else:
+                # Re-build Request object per attempt to avoid stale internal state
+                req = urllib.request.Request(url, data=data, headers=headers_to_send, method=method)
+
+                try:
+                    opener = self._get_opener()
+                    raw_response = opener.open(req, timeout=timeout)
+                    response = ResponseShim(raw_response)
+                except urllib.error.HTTPError as e:
+                    response = ResponseShim(e)
+                    if is_transient_status(e.code):
+                        e.response = response
+                        current_error = e
+                    else:
+                        # Non-transient HTTPError (e.g. 400, 403, 404).
+                        # Run check_response callback on ResponseShim
+                        if check_response is not None:
+                            try:
+                                check_response(response)
+                            except Exception as val_err:
+                                current_error = val_err
+                        # If verification passes, return the response shim
+                        if current_error is None:
+                            return response
+                except Exception as e:
+                    current_error = e
 
             # If success (2xx) and no error, run custom validator
             if current_error is None and response is not None:

@@ -28,6 +28,7 @@ class GoogleTranslator(BaseTranslator):
         source: str = "auto",
         target: str = "en",
         proxies: Optional[dict] = None,
+        session: Optional[object] = None,
         **kwargs
     ):
         """
@@ -42,6 +43,7 @@ class GoogleTranslator(BaseTranslator):
             element_tag="div",
             element_query={"class": "t0"},
             payload_key="q",  # key of text in the url
+            session=session,
             **kwargs
         )
 

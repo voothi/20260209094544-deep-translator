@@ -4,7 +4,7 @@ __copyright__ = "Copyright (C) 2020 Nidhal Baccouri"
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Callable, List, Optional, Union
+from typing import Any, Callable, List, Optional, Union
 
 from deep_translator.constants import GOOGLE_LANGUAGES_TO_CODES
 from deep_translator.exceptions import (
@@ -42,6 +42,7 @@ class BaseTranslator(ABC):
         max_delay: float = DEFAULT_MAX_DELAY,
         max_total_time: Optional[float] = None,
         on_retry: Optional[Callable] = None,
+        session: Optional[Any] = None,
         **url_params,
     ):
         """
@@ -69,6 +70,7 @@ class BaseTranslator(ABC):
         self._max_delay = max_delay
         self._max_total_time = max_total_time
         self._on_retry = on_retry
+        self._session = session
         self._resilient_session = None
         super().__init__()
 
@@ -76,7 +78,7 @@ class BaseTranslator(ABC):
         if self._resilient_session is None:
             from deep_translator.net import ResilientSession
             proxies = getattr(self, "proxies", None)
-            self._resilient_session = ResilientSession(proxies=proxies)
+            self._resilient_session = ResilientSession(proxies=proxies, session=self._session)
         return self._resilient_session
 
     def _http_get(self, url: str, **kwargs):

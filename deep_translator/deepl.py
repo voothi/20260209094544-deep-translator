@@ -30,6 +30,7 @@ class DeeplTranslator(BaseTranslator):
         target: str = "en",
         api_key: Optional[str] = os.getenv(DEEPL_ENV_VAR, None),
         use_free_api: bool = True,
+        session: Optional[object] = None,
         **kwargs
     ):
         """
@@ -54,6 +55,7 @@ class DeeplTranslator(BaseTranslator):
             source=source,
             target=target,
             languages=DEEPL_LANGUAGE_TO_CODE,
+            session=session,
             **kwargs
         )
 
