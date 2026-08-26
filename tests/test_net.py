@@ -9,6 +9,7 @@ import gzip
 import io
 from unittest.mock import MagicMock, patch, Mock
 from deep_translator.net import (
+    DEFAULT_USER_AGENT,
     ResilientSession,
     TransientResponseError,
     is_transient,
@@ -330,3 +331,49 @@ def test_d3a_d3b_split(mock_build_opener):
     mock_opener.open.side_effect = err_403
     res = session.request("GET", "http://test.com", max_retries=0)
     assert res.status_code == 403
+
+
+def test_resilient_session_initializes_with_browser_user_agent():
+    session = ResilientSession()
+    assert "User-Agent" in session._headers
+    assert session._headers["User-Agent"] == DEFAULT_USER_AGENT
+
+
+def test_resilient_session_requests_session_carries_browser_user_agent():
+    mock_req_session = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.text = "OK"
+    mock_resp.headers = {}
+    mock_req_session.request.return_value = mock_resp
+
+    with ResilientSession(session=mock_req_session) as r_session:
+        res = r_session.request("GET", "http://test.com/api")
+        assert res.text == "OK"
+        mock_req_session.request.assert_called_once()
+        _, kwargs = mock_req_session.request.call_args
+        assert "headers" in kwargs
+        assert kwargs["headers"].get("User-Agent") == DEFAULT_USER_AGENT
+
+
+def test_resilient_session_requests_session_merges_and_overrides_headers():
+    mock_req_session = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.text = "OK"
+    mock_resp.headers = {}
+    mock_req_session.request.return_value = mock_resp
+
+    with ResilientSession(session=mock_req_session) as r_session:
+        # Merge additional headers while preserving default User-Agent
+        r_session.request("GET", "http://test.com/api", headers={"Authorization": "Bearer token"})
+        _, kwargs = mock_req_session.request.call_args
+        assert kwargs["headers"]["Authorization"] == "Bearer token"
+        assert kwargs["headers"]["User-Agent"] == DEFAULT_USER_AGENT
+
+        # Explicitly overriding User-Agent
+        custom_ua = "Custom-Agent/1.0"
+        r_session.request("GET", "http://test.com/api", headers={"User-Agent": custom_ua})
+        _, kwargs = mock_req_session.request.call_args
+        assert kwargs["headers"]["User-Agent"] == custom_ua
+

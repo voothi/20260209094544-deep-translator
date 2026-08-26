@@ -10,6 +10,7 @@ DEFAULT_MAX_RETRIES = 3
 DEFAULT_BACKOFF_BASE = 1.0
 DEFAULT_BACKOFF_JITTER = 1.0
 DEFAULT_MAX_DELAY = 30.0
+DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 class TransientResponseError(Exception):
     """
@@ -143,8 +144,9 @@ class ResilientSession:
         self.proxies = proxies
         self.session = session
         self._opener = None
-        self._ua_set = False
-        self._headers = {}
+        self._headers = {
+            "User-Agent": DEFAULT_USER_AGENT
+        }
 
     def _get_opener(self):
         if self._opener is None:
@@ -153,10 +155,6 @@ class ResilientSession:
             if self.proxies:
                 handlers.append(urllib.request.ProxyHandler(self.proxies))
             self._opener = urllib.request.build_opener(*handlers)
-        
-        if not self._ua_set:
-            self._headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            self._ua_set = True
         return self._opener
 
     def close(self):
