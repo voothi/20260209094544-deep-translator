@@ -13,8 +13,13 @@ BAIDU_APPID_ENV_VAR = "BAIDU_APPID"
 BAIDU_APPKEY_ENV_VAR = "BAIDU_APPKEY"
 
 
+GOOGLE_TRANSLATE_CLIENT = "https://clients5.google.com/translate_a/t"
+GOOGLE_TRANSLATE_CLIENT_FALLBACK = "https://translate.googleapis.com/translate_a/single"
+
 BASE_URLS = {
     "GOOGLE_TRANSLATE": "https://translate.google.com/m",
+    "GOOGLE_TRANSLATE_CLIENT": GOOGLE_TRANSLATE_CLIENT,
+    "GOOGLE_TRANSLATE_CLIENT_FALLBACK": GOOGLE_TRANSLATE_CLIENT_FALLBACK,
     "PONS": "https://en.pons.com/translate/",
     "YANDEX": "https://translate.yandex.net/api/{version}/tr.json/{endpoint}",
     "LINGUEE": "https://www.linguee.com/",

@@ -134,3 +134,57 @@ def test_google_ahk_tokenization_round_trip():
     from deep_translator.net import TransientResponseError
     with pytest.raises(TransientResponseError):
         translator._check_google_body(resp_trunc)
+
+def test_google_client_api_json_parsing_clients5():
+    translator = GoogleTranslator(source="en", target="es")
+    # Single string array
+    assert translator._extract_translation('["Hola mundo"]', "Hello world") == "Hola mundo"
+    # Multi-element array
+    assert translator._extract_translation('["Hola ", "mundo!"]', "Hello world!") == "Hola mundo!"
+    # Auto-detected source format [["translation", "detected_lang"]]
+    assert translator._extract_translation('[["Hola mundo", "en"]]', "Hello world") == "Hola mundo"
+
+    # check_google_body validates successfully
+    resp = MagicMock()
+    resp.text = '["Hola mundo"]'
+    translator._check_google_body(resp)
+
+def test_google_client_api_json_parsing_single_endpoint():
+    translator = GoogleTranslator(source="en", target="es")
+    payload = '[[["Hola mundo", "Hello world", null, null, 10]], null, "en"]'
+    assert translator._extract_translation(payload, "Hello world") == "Hola mundo"
+
+    resp = MagicMock()
+    resp.text = payload
+    translator._check_google_body(resp)
+
+@patch("deep_translator.google.GoogleTranslator._http_post")
+def test_google_client_api_large_payload_uses_post(mock_http_post):
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.text = '["Texto largo traducido"]'
+    mock_http_post.return_value = mock_resp
+
+    translator = GoogleTranslator(source="en", target="es")
+    large_text = ("word " * 450).strip()  # > 2000 characters
+    assert len(large_text) > 2000
+    res = translator.translate(large_text)
+    assert res == "Texto largo traducido"
+    mock_http_post.assert_called_once()
+    assert mock_http_post.call_args[1]["data"] == {"q": large_text}
+
+@patch("deep_translator.google.GoogleTranslator._http_get")
+def test_google_client_api_endpoint_fallback(mock_http_get):
+    from deep_translator.net import TransientResponseError
+    fail_resp = TransientResponseError("Primary failed", response=MagicMock())
+    success_resp = MagicMock()
+    success_resp.status_code = 200
+    success_resp.text = '[[["Secundario traducido", "Secondary", null, null, 10]]]'
+    
+    mock_http_get.side_effect = [fail_resp, success_resp]
+
+    translator = GoogleTranslator(source="en", target="es")
+    res = translator.translate("Secondary")
+    assert res == "Secundario traducido"
+    assert mock_http_get.call_count == 2
+
