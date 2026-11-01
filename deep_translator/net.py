@@ -1,5 +1,6 @@
 import time
 import random
+import socket
 import sys
 from typing import Any, Callable, Optional, Union
 from deep_translator._httpresponse import ResponseShim
@@ -11,6 +12,26 @@ DEFAULT_BACKOFF_BASE = 1.0
 DEFAULT_BACKOFF_JITTER = 1.0
 DEFAULT_MAX_DELAY = 30.0
 DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+
+def _install_ipv4_preferred_getaddrinfo() -> None:
+    """Prefer AF_INET (IPv4) ahead of AF_INET6 when family is unspecified to avoid blackholed IPv6 timeouts."""
+    if getattr(socket, "_kw_ipv4_preferred", False):
+        return
+    orig_getaddrinfo = getattr(socket, "_kw_orig_getaddrinfo", socket.getaddrinfo)
+
+    def _ipv4_first_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        res = orig_getaddrinfo(host, port, family, type, proto, flags)
+        if family == 0 and isinstance(res, list) and len(res) > 1:
+            return sorted(res, key=lambda item: 0 if item[0] == socket.AF_INET else 1)
+        return res
+
+    socket._kw_orig_getaddrinfo = orig_getaddrinfo
+    socket.getaddrinfo = _ipv4_first_getaddrinfo
+    socket._kw_ipv4_preferred = True
+
+
+_install_ipv4_preferred_getaddrinfo()
 
 class TransientResponseError(Exception):
     """
